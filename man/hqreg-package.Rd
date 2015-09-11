@@ -29,11 +29,11 @@ coef(fit1, 0.01)
 predict(fit1, X[1:5,], lambda = c(0.02, 0.01))
 
 # Quantile loss
-fit2 = hqreg(X, y, loss = "quantile", tau = 0.2)
+fit2 = hqreg(X, y, method = "quantile", tau = 0.2)
 plot(fit2, xvar = "norm")
 
 # Squared loss
-fit3 = hqreg(X, y, loss = "squared", preprocess = "rescale")
+fit3 = hqreg(X, y, method = "ls", preprocess = "rescale")
 plot(fit3, xvar = "lambda", log.x = TRUE)
 }
 \keyword{models}

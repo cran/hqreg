@@ -20,7 +20,7 @@ cv.hqreg(X, y, ..., nfolds=10, seed, trace=FALSE)
 The function randomly partitions the data in \code{nfolds}. It calls \code{hqreg} 
 \code{nfolds}+1 times, the first to obtain the \code{lambda} sequence, and the remainder 
 to fit with each of the folds left out once for validation. The cross-validation error is 
-the average of validation errors of the \code{nfolds} fits, which are based on the loss part of the model.
+the average of validation errors of the \code{nfolds} fits, which are computed using the loss function of the model.
 
 Note that \code{cv.hqreg} does not search for values of \code{alpha}, \code{gamma} or \code{tau}. 
 Specific values should be supplied, otherwise the default ones for \code{hqreg} are used. 

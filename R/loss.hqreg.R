@@ -1,10 +1,10 @@
 loss.hqreg <- function(y, yhat, args) {
   r <- y-yhat
-  loss <- args$loss
-  if (loss == "huber") {
+  method <- args$method
+  if (method == "huber") {
     gamma <- args$gamma
     val <- hloss(r, gamma)
-  } else if (loss == "quantile") {
+  } else if (method == "quantile") {
     tau <- args$tau
     val <- qloss(r, tau)
   } else {
