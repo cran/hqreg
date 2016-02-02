@@ -18,4 +18,4 @@ hloss <- function(r, gamma) {
   ifelse(rr <= gamma, rr^2/(2*gamma), rr-gamma/2)
 }
 
-qloss <- function(r, tau) ifelse(r <= 0, (1-tau)*r, tau*r)
+qloss <- function(r, tau) ifelse(r <= 0, (tau-1)*r, tau*r)

@@ -1,10 +1,10 @@
-84663343823202bb54284826f22eec86 *DESCRIPTION
+83cccaaae005067e864e78c7493f3b11 *DESCRIPTION
 e19ea23136473b251d856a98a2c3e0fc *NAMESPACE
-a60d1302e9eed68e50205dc12f3e2709 *NEWS
+fc22919a8e8721ab929eced7cbafbcb4 *NEWS
 a726b30da9855ca9292827ec1d27be7d *R/cv.hqreg.R
 03c1a5469a6708ef276ab8909a7558a3 *R/hqreg.R
 51eb4755f4cc261f9e80905dfb7efdbb *R/init.R
-8a3ba50d8bb78b91ae70b77ac73d45de *R/loss.hqreg.R
+3a89b6d0e27d0d9833b386bd3ab5f5b1 *R/loss.hqreg.R
 fcbe935f0f35abc8dcecb545fc752492 *R/plot.cv.hqreg.R
 803cb9b5957a2b69d2013c57d276d3f5 *R/plot.hqreg.R
 524ada22e90afeed8b0afbfe54dd8bae *R/predict.cv.hqreg.R
