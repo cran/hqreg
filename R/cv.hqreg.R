@@ -1,22 +1,24 @@
-cv.hqreg <- function(X, y, ..., nfolds=10, seed, trace=FALSE) {
+cv.hqreg <- function(X, y, ..., nfolds=10, fold.id, type.measure = c("deviance", "mse", "mae"), 
+                     seed, trace=FALSE) {
+  type.measure = match.arg(type.measure)
   if (!missing(seed)) set.seed(seed)
   fit <- hqreg(X, y, ...)
   cv.args <- list(...)
   cv.args$lambda <- fit$lambda
   cv.args$gamma <- fit$gamma
-  loss.args <- list(method=fit$method, gamma=fit$gamma, tau=fit$tau)
+  loss.args <- list(method=fit$method, gamma=fit$gamma, tau=fit$tau, type.measure = type.measure)
   E <- matrix(NA, nrow=length(y), ncol=length(cv.args$lambda))
   n <- length(y)
-  cv.ind <- ceiling(sample(1:n)/n*nfolds)
+  if(missing(fold.id)) fold.id <- ceiling(sample(1:n)/n*nfolds)
   for (i in 1:nfolds) {
     if (trace) cat("Starting CV fold #",i,sep="","\n")
-    cv.args$X <- X[cv.ind!=i,]
-    cv.args$y <- y[cv.ind!=i]
-    X2 <- X[cv.ind==i,]
-    y2 <- y[cv.ind==i]
+    cv.args$X <- X[fold.id!=i,]
+    cv.args$y <- y[fold.id!=i]
+    X2 <- X[fold.id==i,]
+    y2 <- y[fold.id==i]
     fit.i <- do.call("hqreg", cv.args) # ensure the cross validation uses the same gamma for huber loss
     yhat <- predict(fit.i, X2)
-    E[cv.ind==i, 1:ncol(yhat)] <- loss.hqreg(y2, yhat, loss.args)
+    E[fold.id==i, 1:ncol(yhat)] <- loss.hqreg(y2, yhat, loss.args)
   }
 
   ## Eliminate saturated lambda values
