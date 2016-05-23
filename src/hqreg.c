@@ -6,1223 +6,1067 @@
 #include "Rinternals.h"
 #include "R_ext/Rdynload.h"
 
+double sign(double x);
+double crossprod(double *x, double *v, int n, int j);
+double maxprod(double *x, double *v, int n, int p, double *pf, int *nonconst);
 double ksav(double *a, int size, int K);
+void standardize(double *x, double *x2, double *shift, double *scale, int *nonconst, int n, int p);
+void rescale(double *x, double *x2, double *shift, double *scale, int *nonconst, int n, int p);
+void simple_process(double *x, double *x2, int *nonconst, int n, int p);
+void postprocess(double *beta, double *shift, double *scale, int *nonconst, int nlam, int p);
+void init_huber(double *beta, double *beta_old, int *iter, double *x, double *x2, 
+		double *y, double *r, double *pf, double *d1, double *d2, int *nonconst, 
+		double gamma, double thresh, int n, int p, int max_iter);
+void init_quantile(double *beta, double *beta_old, int *iter, double *x, double *x2, 
+		   double *y, double *r, double *pf, double *d1, double *d2, int *nonconst,
+		   double gamma, double c, double thresh, int n, int p, int max_iter);
+void init_squared(double *beta, double *beta_old, int *iter, double *x, double *x2m, double *y, double *r, 
+                  double *pf, int *nonconst, double thresh, int n, int p, int ppflag, int max_iter);
 
-static double sign(double x) {
-  if(x>0.00000000001) return 1.0;
-  else if(x<-0.00000000001) return -1.0;
-  else return 0.0;
-}
-
-static void derivative_huber(double *dk, double *ddk, double *r, double gamma, int n) {
-  for(int i=0; i<n; i++)
-    if(fabs(r[i]) > gamma) {
-      dk[i] = sign(r[i]);
-      ddk[i] = 0.0;
+void derivative_huber(double *d1, double *d2, double *r, double gamma, int n) {
+  double gi = 1.0/gamma;
+  for (int i=0; i<n; i++)
+    if (fabs(r[i]) > gamma) {
+      d1[i] = sign(r[i]);
+      d2[i] = 0.0;
     } else {
-      dk[i] = r[i]/gamma;
-      ddk[i] = 1.0/gamma;
+      d1[i] = r[i]*gi;
+      d2[i] = gi;
     }
 }
 
-static void derivative_quantapprox(double *dk, double *ddk, double *r, double gamma, double c, int n) {
-  for(int i=0; i<n; i++) {
-    if(fabs(r[i]) > gamma) {
-      dk[i] = sign(r[i]);
-      ddk[i] = 0.0;
+void derivative_quantapprox(double *d1, double *d2, double *r, double gamma, double c, int n) {
+  double gi = 1.0/gamma;
+  for (int i=0; i<n; i++) {
+    if (fabs(r[i]) > gamma) {
+      d1[i] = sign(r[i])+c;
+      d2[i] = 0.0;
     } else {
-      dk[i] = r[i]/gamma;
-      ddk[i] = 1.0/gamma;
-    }
-    dk[i] += c;
-  }
-}
-
-static double crossprod(double *x, double *v, int n, int j) {
-  int jn = j*n;
-  double sum=0.0;
-  for (int i=0;i<n;i++) sum += x[jn+i]*v[i];
-  return(sum);
-}
-
-static double maxprod(double *x, double *v, int n, int p, double *pf) {
-  int j;
-  double z, max=0.0;
-  for(j=1; j<p; j++) {
-    if(pf[j]) {
-      z = fabs(crossprod(x, v, n, j))/pf[j];
-      if(z>max) max = z;
-    }
-  }
-  return(max);
-}
-
-// standardization
-static void standardize(double *x, double *x2, double *center, double *scale, int n, int p) {
-  int i, j, jn; 
-  double s2;
-  for(j=1; j<p; j++) {
-    center[j] = 0.0; scale[j] = 0.0; jn = j*n;
-    for(i=0; i<n; i++) center[j] += x[jn+i];
-    center[j] = center[j]/n;
-    for(i=0; i<n; i++) {
-      x[jn+i] -= center[j];
-      x2[jn+i] = pow(x[jn+i], 2);
-      scale[j] += x2[jn+i];
-    }
-    s2 = scale[j]/n;
-    scale[j] = sqrt(s2);
-    for(i=0; i<n; i++) {
-      x[jn+i] = x[jn+i]/scale[j];
-      x2[jn+i] = x2[jn+i]/s2;
-    }
-  }
-} 
-
-static void unstandardize(double *beta, double *center, double *scale, int nlam, int p) {
-  int l, j, lp;
-  double prod;
-  for(l = 0; l<nlam; l++) {
-    lp = l*p;
-    prod = 0.0;
-    for(j = 1; j<p; j++) {
-      beta[lp+j] = beta[lp+j]/scale[j];
-      prod += center[j]*beta[lp+j];
-    }
-    beta[lp] -= prod;
-  }
-}
-
-// feature rescaling
-static void rescale(double *x, double *x2, double *colMin, double *colRange, int n, int p) {
-  int i, j, jn; double cmin, cmax;
-  for (j=1; j<p; j++) {
-    jn = j*n;
-    cmin = x[jn];
-    cmax = x[jn];
-    for (i=1; i<n; i++) {
-      if (x[jn+i] < cmin) {
-	cmin = x[jn+i];
-      } else if (x[jn+i] > cmax) {
-	cmax = x[jn+i];
-      }
-    }
-    colMin[j] = cmin;
-    colRange[j] = cmax-cmin;
-    for (i=0; i<n; i++) {
-      x[jn+i] = (x[jn+i]-colMin[j])/colRange[j];
-      x2[jn+i] = pow(x[jn+i], 2);
+      d1[i] = r[i]*gi+c;
+      d2[i] = gi;
     }
   }
 }
-
-static void unrescale(double *beta, double *colMin, double *colRange, int nlam, int p) {
-  int l, j, lp; double prod;
-  for(l = 0; l<nlam; l++) {
-    lp = l*p;
-    prod = 0.0;
-    for(j = 1; j<p; j++) {
-      beta[lp+j] = beta[lp+j]/colRange[j];
-      prod += colMin[j]*beta[lp+j];
-    }
-    beta[lp] -= prod;
-  }
-}
-
 
 // Semismooth Newton Coordinate Descent (SNCD)
-static void sncd_huber(double *beta, int *iter, double *lambda, int *saturated, int *numv, double *x, double *y, double *d, double *pf, double *gamma_, double *alpha_, double *eps_, double *lambda_min_, 
-	int *nlam_, int *n_, int *p_, int *ppflag_, int *scrflag_, int *dfmax_, int *max_iter_, int *user_, int *message_)
+static void sncd_huber(double *beta, int *iter, double *lambda, int *saturated, int *numv, double *x, double *y, 
+		       double *pf, double *gamma_, double *alpha_, double *eps_, double *lambda_min_, int *nlam_, 
+		       int *n_, int *p_, int *ppflag_, int *scrflag_, int *dfmax_, int *max_iter_, int *user_, int *message_)
 {
   // Declarations
   double gamma = gamma_[0]; double alpha = alpha_[0]; double eps = eps_[0]; double lambda_min = lambda_min_[0]; 
   int nlam = nlam_[0]; int n = n_[0]; int p = p_[0]; int ppflag = ppflag_[0]; int scrflag = scrflag_[0];
   int dfmax = dfmax_[0]; int max_iter = max_iter_[0]; int user = user_[0]; int message = message_[0];
-  int i, j, k, l, lp, jn, converged, mismatch; double pct, lstep, ldiff, lmax, l1, l2, v1, v2, v3, temp, shift, nullDev, max_update, update, thresh, strfactor = 1.0; 
+  int i, j, k, l, ll, lp, jn, lstart, mismatch; 
+  double pct, lstep, ldiff = 1.0, l1, l2, v1, v2, v3, tmp, change, nullDev, max_update, update, thresh;
+  double gi = 1.0/gamma; // 1/gamma as a multiplier
+  double scrfactor = 1.0; // scaling factor used for screening rules
+  //scrflag = 0: no screening; scrflag = 1: Adaptive Strong Rule(ASR); scrflag = 2: Strong Rule(SR)
+  // ASR fits an appropriate scrfactor adaptively; SR always uses scrfactor = 1
   int nnzero = 0; // number of nonzero variables
   double *x2 = Calloc(n*p, double); // x^2
-  for(i=0; i<n; i++) x2[i] = 1.0; // column of 1's for intercept
-  double *center = Calloc(p, double);
+  for (i=0; i<n; i++) x2[i] = 1.0; // column of 1's for intercept
+  double *shift = Calloc(p, double);
   double *scale = Calloc(p, double);
-  double *colMin = Calloc(p, double);
-  double *colRange = Calloc(p, double);
   double *beta_old = Calloc(p, double); 
   double *r = Calloc(n, double);
-  double *w = Calloc(n, double);  
   double *s = Calloc(p, double);
-  double *dk = Calloc(n, double);
-  double *ddk = Calloc(n, double); 
-  double *z = Calloc(p, double); // partial derivative used for screening: X^t*dk/n
+  double *d1 = Calloc(n, double);
+  double *d2 = Calloc(n, double);
+  double *z = Calloc(p, double); // partial derivative used for screening: X^t*d1/n
   double cutoff;
-  int *ind = Calloc(p, int); 
-  ind[0] = 1; // intercept is unpenalized so always included
-  //scrflag = 0: no screening; scrflag = 1: Adaptive Strong Rule(ASR); scrflag = 2: Strong Rule(SR)
-  // ASR fits an appropriate strfactor adaptively; SR always uses strfactor = 1
-  if (scrflag == 0) {
-    for (j=1; j<p; j++) ind[j] = 1;
-  }
+  int *include = Calloc(p, int);
+  int *nonconst = Calloc(p, int);
   int violations = 0, nv = 0; 
   
   // Preprocessing
   if (ppflag == 1) {
-    standardize(x, x2, center, scale, n, p);
+    standardize(x, x2, shift, scale, nonconst, n, p);
   } else if (ppflag == 2) {
-    rescale(x, x2, colMin, colRange, n, p);
+    rescale(x, x2, shift, scale, nonconst, n, p);
   } else {
-    for(j=1; j<p; j++) {
-      jn = j*n;
-      for(i=0; i<n; i++) x2[jn+i]=pow(x[jn+i],2);
-    }
+    simple_process(x, x2, nonconst, n, p);
   }
 
+  include[0] = 1; // always include an intercept
+  if (scrflag == 0) {
+    for (j=1; j<p; j++) if (nonconst[j]) include[j] = 1;
+  } else {
+    for (j=1; j<p; j++) if (pf[j] == 0.0 && nonconst[j]) include[j] = 1; // unpenalized coefficients
+  }
+  
   // Initialization
   nullDev = 0.0; // not divided by n
-  for (i=0;i<n;i++) {
+  for (i=0; i<n; i++) {
     r[i] = y[i];
-    temp = fabs(r[i]);
-    if(temp>gamma) {
-      nullDev += temp - gamma/2;
+    tmp = fabs(r[i]);
+    if (tmp > gamma) {
+      nullDev += tmp - gamma/2;
     } else {
-      nullDev += temp*temp/(2*gamma);
+      nullDev += tmp*tmp/(2*gamma);
     }
   }
   thresh = eps*nullDev;
-  if (message) Rprintf("threshold = %f\n", thresh);
-  derivative_huber(dk, ddk, r, gamma, n); 
- 
-  for(j=0; j<p; j++) {
-    z[j] = crossprod(x, dk, n, j)/n;
+  if (message) Rprintf("Threshold = %f\nGamma = %f\n", thresh, gamma);
+  
+  // Initial solution
+  derivative_huber(d1, d2, r, gamma, n);
+  init_huber(beta, beta_old, iter, x, x2, y, r, pf, d1, d2, nonconst, gamma, thresh, n, p, max_iter);
+  
+  // Set up lambda
+  if (user == 0) {
+    lambda[0] = maxprod(x, d1, n, p, pf, nonconst)/(n*alpha);
+    if (lambda_min == 0.0) lambda_min = 0.001;
+    lstep = log(lambda_min)/(nlam - 1);
+    for (l=1; l<nlam; l++) lambda[l] = lambda[l-1]*exp(lstep);
+    if (message) Rprintf("Lambda 1\n# iterations = %d\n", iter[0]);
+    lstart = 1;
+  } else {
+    lstart = 0;
   }
 
-  // Setup lambda
-  if(user==0) {
-    lambda[0] = maxprod(x, d, n, p, pf)/(n*alpha);
-    if(lambda_min == 0.0) lambda_min = 0.001;
-    lstep = log(lambda_min)/(nlam - 1);
-    for(l=1; l<nlam; l++) lambda[l] = lambda[l-1]*exp(lstep);
-  }
+  for (j=1; j<p; j++) if (pf[j] && nonconst[j]) z[j] = crossprod(x, d1, n, j)/n;
 
   // Solution path
-  for(l=0; l<nlam; l++) {
-    converged = 0; lp = l*p;
+  for (l=lstart; l<nlam; l++) {
+    if (message) Rprintf("Lambda %d\n", l+1);
+    lp = l*p;
     l1 = lambda[l]*alpha;
     l2 = lambda[l]*(1.0-alpha);
     // Variable screening
-    if(scrflag != 0) {
-      if(strfactor>5.0) strfactor = 5.0;
-      if(l!=0) {
-        cutoff = alpha*((1.0+strfactor)*lambda[l] - strfactor*lambda[l-1]);
-        ldiff = lambda[l-1] - lambda[l];
+    if (scrflag != 0) {
+      if (scrfactor > 3.0) scrfactor = 3.0;
+      if (l == 0) {
+      	cutoff = alpha*lambda[0];
       } else {
-        lmax = 0.0;
-        for(j=0; j<p; j++) if(fabs(z[j])>lmax) lmax = fabs(z[j]);
-        lmax = lmax/alpha;
-        cutoff = alpha*((1+strfactor)*lambda[0] - strfactor*lmax);
-        ldiff = lmax - lambda[0];
+        cutoff = alpha*((1.0+scrfactor)*lambda[l] - scrfactor*lambda[l-1]);
+        ldiff = lambda[l-1] - lambda[l];
       }
       for (j=1; j<p; j++) {
-        if(fabs(z[j]) > (cutoff * pf[j])) {
-          ind[j] = 1;
-        } else {
-          ind[j] = 0;
-        }
+        if (include[j] == 0 && nonconst[j] && fabs(z[j]) > cutoff * pf[j]) include[j] = 1;
       }
-      strfactor = 1.0; //reset strfactor for ASR
+      if (scrflag == 1) scrfactor = 0.0; //reset scrfactor for ASR
     }
-    while(iter[l] < max_iter) {
-      converged = 0;
+    while (iter[l] < max_iter) {
       // Check dfmax
-      if(nnzero > dfmax) {
-        for(int ll = l; ll<nlam; ll++) iter[ll] = NA_INTEGER;
+      if (nnzero > dfmax) {
+        for (ll = l; ll<nlam; ll++) iter[ll] = NA_INTEGER;
         saturated[0] = 1;
         break;
       }
-
       // Solve KKT equations on eligible predictors
-      while(iter[l]<max_iter) {
+      while (iter[l] < max_iter) {
         iter[l]++;
-        mismatch = 0; max_update = 0.0;
-        for(j=0; j<p; j++) {
-          if(ind[j]) {
-            // Calculate v1, v2
-	    jn = j*n; v1 = 0.0; v2 = 0.0; pct = 0.0;
-            for(i=0; i<n; i++) {
-              v1 += x[jn+i]*dk[i];
-              v2 += x2[jn+i]*ddk[i];
-              pct += ddk[i];
-            }
-	    v1 = v1/n; v2 = v2/n; pct = pct*gamma/n;
-            //if(iter[l]==1 && j==1)Rprintf("l=%d, v1=%lf, v2=%lf, pct=%lf\n",l+1,v1,v2,pct);
-	    if(pct<0.05 || pct<1/n) {
-	      // approximate v2 with a continuation technique
-              v2 = 0.0; 
-	      for(i=0; i<n; i++) {
-		if (ddk[i]) {
-		  v2 += x2[jn+i]*ddk[i];
-		} else { // |r_i|>gamma
-		  w[i] = dk[i]/r[i];
-                  v2 += x2[jn+i]*w[i];
+        max_update = 0.0;
+        for (j=0; j<p; j++) {
+          if (include[j]) {
+            for (k=0; k<5; k++) {
+              update = 0.0; mismatch = 0;
+              // Calculate v1, v2
+	      jn = j*n; v1 = 0.0; v2 = 0.0; pct = 0.0;
+              for (i=0; i<n; i++) {
+                v1 += x[jn+i]*d1[i];
+                v2 += x2[jn+i]*d2[i];
+                pct += d2[i];
+              }
+	      pct *= gamma/n; // percentage of residuals with absolute values below gamma
+              if (pct < 0.05 || pct < 1.0/n) {
+                // approximate v2 with a continuation technique
+                for (i=0; i<n; i++) {
+                  tmp = fabs(r[i]);
+                  if (tmp > gamma) v2 += x2[jn+i]/tmp;
                 }
               }
-              v2 = v2/n;
-              // Rprintf("After: v2=%f\n", v2);              
-	    }
-            // Update beta_j
-            if(pf[j]==0.0) { // unpenalized
-	      beta[lp+j] = beta_old[j] + v1/v2; 
-            } else if(fabs(beta_old[j]+s[j])>1.0) { // active
-              s[j] = sign(beta_old[j]+s[j]);
-              beta[lp+j] = beta_old[j] + (v1-l1*pf[j]*s[j]-l2*pf[j]*beta_old[j])/(v2+l2*pf[j]); 
-            } else {
-              s[j] = (v1+v2*beta_old[j])/(l1*pf[j]);
-              beta[lp+j] = 0.0;
-            }
-            // mark the first mismatch between beta and s
-	    if (!mismatch && j>0) {
-              if (fabs(s[j]) > 1 || (beta[lp+j] != 0 && s[j] != sign(beta[lp+j])))
-		 mismatch = 1;
-            }
-	    // Update r, dk, ddk and compute candidate of max_update
-            shift = beta[lp+j]-beta_old[j];
-            if(shift!=0.0) {
-	      v2 = 0.0;
-              for(i=0; i<n; i++) {
-		r[i] -= x[jn+i]*shift;
-                if(fabs(r[i])>gamma) {
-                  dk[i] = sign(r[i]);
-                  ddk[i] = 0.0;
-                } else {
-		  dk[i] = r[i]/gamma;
-		  ddk[i] = 1.0/gamma;
-	          v2 += x2[jn+i]*ddk[i];
-	        }
-	      }
-	      v2 += n*l2*pf[j];
-	      update = v2*shift*shift;
-              if(update>max_update) max_update = update;
-              beta_old[j] = beta[lp+j];
+              v1 /= n; v2 /= n;
+              // Update beta_j
+              if (pf[j] == 0.0) { // unpenalized
+	        beta[lp+j] = beta_old[j] + v1/v2; 
+              } else if (fabs(beta_old[j]+s[j]) > 1.0) { // active
+                s[j] = sign(beta_old[j]+s[j]);
+                beta[lp+j] = beta_old[j] + (v1-l1*pf[j]*s[j]-l2*pf[j]*beta_old[j])/(v2+l2*pf[j]); 
+              } else { // inactive
+                s[j] = (v1+v2*beta_old[j])/(l1*pf[j]);
+                beta[lp+j] = 0.0;
+              }
+              // mismatch between beta and s
+	      if (pf[j] > 0) {
+                if (fabs(s[j]) > 1 || (beta[lp+j] != 0 && s[j] != sign(beta[lp+j]))) mismatch = 1;
+              }
+              // Update r, d1, d2 and compute candidate of max_update
+              change = beta[lp+j]-beta_old[j];
+              if (fabs(change) > 1e-6) {
+                for (i=0; i<n; i++) {
+		  r[i] -= x[jn+i]*change;
+                  if (fabs(r[i]) > gamma) {
+                    d1[i] = sign(r[i]);
+                    d2[i] = 0.0;
+                  } else {
+	            d1[i] = r[i]*gi;
+              	    d2[i] = gi;
+                  }
+                }
+                update = (v2+l2*pf[j])*change*change*n;
+                if (update > max_update) max_update = update;
+                beta_old[j] = beta[lp+j];
+              }
+              if (!mismatch && update < thresh) break;
             }
           }
         }
         // Check for convergence
-        if(iter[l]>1) {
-          if(!mismatch && max_update < thresh) {
-            converged = 1;
-	    break;
-	  }
-        }
+        if (max_update < thresh) break;
       }
       // Scan for violations of the screening rule and count nonzero variables
       violations = 0; nnzero = 0;
       if (scrflag != 0) {
         for (j=0; j<p; j++) {
-	  if (ind[j]==0) {
-            v1 = crossprod(x, dk, n, j)/n;
+	  if (include[j] == 0 && nonconst[j]) {
+	    // pf[j] > 0, beta_old = beta = s = 0
+            v1 = crossprod(x, d1, n, j)/n;
 	    // Check for KKT conditions
-	    if (fabs(v1)>l1*pf[j]) { 
-	      ind[j]=1; 
+	    if (fabs(v1) > l1*pf[j]) { 
+	      include[j]=1; 
 	      violations++;
-	      // pf[j] > 0
-	      // beta_old = beta = d = 0, no need for judgement
               s[j] = v1/(l1*pf[j]);
-              if (violations == 1 & message) Rprintf("Lambda %d\n", l+1);
               if (message) Rprintf("+V%d", j);
-	    } else if (scrflag == 1 && ldiff != 0.0) {
-	      v3 = fabs((v1-z[j])/(pf[j]*ldiff*alpha));
-              if (v3 > strfactor) strfactor = v3;
+	    } else if (scrflag == 1) {
+	      v3 = fabs(v1-z[j]);
+              if (v3 > scrfactor) scrfactor = v3;
 	    }
 	    z[j] = v1;
 	  }
-          if (beta_old[j] != 0.0) nnzero++;
+	  if (beta_old[j] != 0) nnzero++;
         }
-        if (violations>0 && message) Rprintf("\n");
+        scrfactor /= alpha*ldiff;
+        if (message && violations > 0) Rprintf("\n");
       } else {
         for (j=0; j<p; j++) {
-          if (beta_old[j] != 0.0) nnzero++;
+          if (beta_old[j] != 0) nnzero++;
         }
       }
-      if (violations==0) break;
+      if (message) Rprintf("# iterations = %d\n", iter[l]);
+      if (violations == 0) break;
       nv += violations;
     }
-    //Rprintf("iter[%d] = %d, beta[0] = %f\n", l+1, iter[l], beta[l*p]);
   }
   if (scrflag != 0 && message) Rprintf("# violations detected and fixed: %d\n", nv);
   numv[0] = nv;
   // Postprocessing
-  if (ppflag == 1) {
-    unstandardize(beta, center, scale, nlam, p);
-  } else if (ppflag == 2) {
-    unrescale(beta, colMin, colRange, nlam, p);
-  }
+  if (ppflag) postprocess(beta, shift, scale, nonconst, nlam, p);
 
   Free(x2);
-  Free(center);
+  Free(shift);
   Free(scale);
-  Free(colMin);
-  Free(colRange);
   Free(beta_old);
   Free(r);
-  Free(w);
   Free(s);
-  Free(dk);
-  Free(ddk);
+  Free(d1);
+  Free(d2);
   Free(z);
-  Free(ind);
+  Free(include);
+  Free(nonconst);
 }
 
-static void sncd_quantile(double *beta, int *iter, double *lambda, int *saturated, int *numv, double *x, double *y, double *d, double *pf, double *gamma_, double *tau_, double *alpha_, double *eps_, 
-       double *lambda_min_, int *nlam_, int *n_, int *p_, int *ppflag_, int *scrflag_, int *dfmax_, int *max_iter_, int *user_, int *message_)
+static void sncd_quantile(double *beta, int *iter, double *lambda, int *saturated, int *numv, double *x, double *y, 
+			  double *pf, double *tau_, double *alpha_, double *eps_, double *lambda_min_, int *nlam_, 
+			  int *n_, int *p_, int *ppflag_, int *scrflag_, int *dfmax_, int *max_iter_, int *user_, int *message_)
 {
   // Declarations
-  double gamma = gamma_[0]; double tau = tau_[0]; double c = 2*tau-1.0; double alpha = alpha_[0]; double eps = eps_[0]; double lambda_min = lambda_min_[0]; 
+  double tau = tau_[0]; double alpha = alpha_[0]; double eps = eps_[0]; double lambda_min = lambda_min_[0]; 
   int nlam = nlam_[0]; int n = n_[0]; int p = p_[0]; int ppflag = ppflag_[0]; int scrflag = scrflag_[0];
   int dfmax = dfmax_[0]; int max_iter = max_iter_[0]; int user = user_[0]; int message = message_[0];
-  int i, j, k, l, lp, jn, converged, mismatch; double pct, lstep, ldiff, lmax, l1, l2, v1, v2, v3, temp, shift, nullDev, max_update, update, thresh, strfactor = 1.0; 
+  int i, j, k, l, ll, lp, jn, lstart, mismatch; 
+  double gamma, gi, pct, lstep, ldiff = 1.0, l1, l2, v1, v2, v3, tmp, change, nullDev, max_update, update, thresh; 
+  double c = 2*tau-1.0; // coefficient for the linear term in quantile loss
+  double scrfactor = 1.0; // variable screening factor
+  //scrflag = 0: no screening; scrflag = 1: Adaptive Strong Rule(ASR); scrflag = 2: Strong Rule(SR)
+  // ASR fits an appropriate scrfactor adaptively; SR always uses scrfactor = 1
   int nnzero = 0; // number of nonzero variables
   double *x2 = Calloc(n*p, double); // x^2
-  for(i=0; i<n; i++) x2[i] = 1.0; // column of 1's for intercept
-  double *center = Calloc(p, double);
+  for (i=0; i<n; i++) x2[i] = 1.0; // column of 1's for intercept
+  double *shift = Calloc(p, double);
   double *scale = Calloc(p, double);
-  double *colMin = Calloc(p, double);
-  double *colRange = Calloc(p, double);
   double *beta_old = Calloc(p, double);
   double *r = Calloc(n, double);
-  double *w = Calloc(n, double);
   double *s = Calloc(p, double);
-  double *dk = Calloc(n, double);
-  double *ddk = Calloc(n, double);
-  double *z = Calloc(p, double); // partial derivative used for screening: X^t*dk/n
+  double *d = Calloc(n, double);
+  double *d1 = Calloc(n, double);
+  double *d2 = Calloc(n, double);
+  double *z = Calloc(p, double); // partial derivative used for screening: X^t*d1/n
   double cutoff;
-  int *ind = Calloc(p, int);
-  ind[0] = 1; // intercept is unpenalized so always included
-  //scrflag = 0: no screening; scrflag = 1: Adaptive Strong Rule(ASR); scrflag = 2: Strong Rule(SR)
-  // ASR fits an appropriate strfactor adaptively; SR always uses strfactor = 1
-  if (scrflag == 0) {
-    for (j=1; j<p; j++) ind[j] = 1;
-  }
+  int *include = Calloc(p, int);
+  int *nonconst = Calloc(p, int);
   int violations = 0, nv = 0;
-  int m = (int) (n*0.10);
+  int m = n/10 + 1;
 
   // Preprocessing
   if (ppflag == 1) {
-    standardize(x, x2, center, scale, n, p);
+    standardize(x, x2, shift, scale, nonconst, n, p);
   } else if (ppflag == 2) {
-    rescale(x, x2, colMin, colRange, n, p);
+    rescale(x, x2, shift, scale, nonconst, n, p);
   } else {
-    for(j=1; j<p; j++) {
-      jn = j*n;
-      for(i=0; i<n; i++) x2[jn+i]=pow(x[jn+i],2);
-    }
+    simple_process(x, x2, nonconst, n, p);
   }
-
+  for (j=1; j<p; j++) if (!nonconst[j]) Rprintf("nonconst[%d] = %d\n", j, nonconst[j]);
+  
+  include[0] = 1; // always include an intercept
+  if (scrflag == 0) {
+    for (j=1; j<p; j++) if (nonconst[j]) include[j] = 1;
+  } else {
+    for (j=1; j<p; j++) if (pf[j] == 0.0 && nonconst[j]) include[j] = 1; // unpenalized coefficients
+  }
+  
   // Initialization
   nullDev = 0.0; // not divided by n
   for (i=0;i<n;i++) {
     r[i] = y[i];
-    temp = r[i];
-    nullDev += fabs(temp) + c*temp;
+    nullDev += fabs(r[i]) + c*r[i];
   }
   thresh = eps*nullDev;
-  derivative_quantapprox(dk, ddk, r, gamma, c, n);
-  for(j=0; j<p; j++) z[j] = crossprod(x, dk, n, j)/(2*n);
+  if (message) Rprintf("Threshold = %f\n", thresh);
 
-  // Setup lambda
-  if(user==0) {
-    lambda[0] = maxprod(x, d, n, p, pf);
-    // compute lambda[0] for original quantile loss
-    for(i=0; i<n; i++) {
-      if(fabs(r[i]) < 1e-10) {
-        d[i] = 1.0+c;
+  // Initial solution
+  gamma = ksav(r, n, m);
+  if (gamma<0.001) gamma = 0.001;
+  derivative_quantapprox(d1, d2, r, gamma, c, n);
+  init_quantile(beta, beta_old, iter, x, x2, y, r, pf, d1, d2, nonconst, gamma, c, thresh, n, p, max_iter);
+
+  // Set up lambda
+  if (user == 0) {
+    lambda[0] = maxprod(x, d1, n, p, pf, nonconst);
+    for (i=0; i<n; i++) {
+      if (fabs(r[i]) < 1e-10) {
+        d[i] = c;
       } else {
         d[i] = sign(r[i])+c;
-      } 
+      }
     }
-    temp = maxprod(x, d, n, p, pf);
-    if(temp>lambda[0]) lambda[0] = temp; // pick the larger one
+    tmp = maxprod(x, d, n, p, pf, nonconst);
+    if (tmp > lambda[0]) lambda[0] = tmp;
     lambda[0] = lambda[0]/(2*n*alpha);
-    if(lambda_min == 0.0) lambda_min = 0.001;
+    if (lambda_min == 0.0) lambda_min = 0.001;
     lstep = log(lambda_min)/(nlam - 1);
-    for(l=1; l<nlam; l++) lambda[l] = lambda[l-1]*exp(lstep);
+    for (l=1; l<nlam; l++) lambda[l] = lambda[l-1]*exp(lstep);
+    if (message) Rprintf("Lambda 1: Gamma = %f\n# iterations = %d\n", gamma, iter[0]);
+    lstart = 1;
+  } else {
+    lstart = 0;
   }
 
+  for (j=1; j<p; j++) if (pf[j] && nonconst[j]) z[j] = crossprod(x, d1, n, j)/(2.0*n);
+  
   // Solution path
-  for(l=0; l<nlam; l++) {
-    if(gamma>0.001 && l>0) {
-      temp = ksav(r, n, m);
-      if (temp < gamma) gamma = temp;
+  for (l=lstart; l<nlam; l++) {
+    if (gamma > 0.001) {
+      tmp = ksav(r, n, m);
+      if (tmp < gamma) gamma = tmp;
     }
-    if(gamma<0.001) gamma = 0.001;
+    if (gamma < 0.001) gamma = 0.001;
+    gi = 1.0/gamma;
     if (message) Rprintf("Lambda %d: Gamma = %f\n", l+1, gamma);
-    converged = 0; lp = l*p;
+    lp = l*p;
     l1 = lambda[l]*alpha;
     l2 = lambda[l]*(1.0-alpha);
     // Variable screening
-    if(scrflag != 0) {
-      if(strfactor>5.0) strfactor = 5.0;
-      if(l!=0) {
-        cutoff = alpha*((1.0+strfactor)*lambda[l] - strfactor*lambda[l-1]);
-        ldiff = lambda[l-1] - lambda[l];
+    if (scrflag != 0) {
+      if (scrfactor > 3.0) scrfactor = 3.0;
+      if (l == 0) {
+      	cutoff = alpha*lambda[0];
       } else {
-        lmax = 0.0;
-        for(j=0; j<p; j++) if(fabs(z[j])>lmax) lmax = fabs(z[j]);
-        lmax = lmax/alpha;
-        cutoff = alpha*((1+strfactor)*lambda[0] - strfactor*lmax);
-        ldiff = lmax - lambda[0];
+      	cutoff = alpha*((1.0+scrfactor)*lambda[l] - scrfactor*lambda[l-1]);
+        ldiff = lambda[l-1] - lambda[l];
       }
       for (j=1; j<p; j++) {
-        if(fabs(z[j]) > (cutoff * pf[j])) {
-          ind[j] = 1;
-        } else {
-          ind[j] = 0;
-        }
+        if (include[j] == 0 && nonconst[j] && fabs(z[j]) > cutoff * pf[j]) include[j] = 1;
       }
-      strfactor = 1.0; //reset strfactor for ASR
+      if (scrflag == 1) scrfactor = 0.0; //reset scrfactor for ASR
     }
-    
-    while(iter[l] < max_iter) {
-      converged = 0;
+    while (iter[l] < max_iter) {
       // Check dfmax
-      if(nnzero > dfmax) {
-        for(int ll = l; ll<nlam; ll++) iter[ll] = NA_INTEGER;
+      if (nnzero > dfmax) {
+        for (ll = l; ll<nlam; ll++) iter[ll] = NA_INTEGER;
         saturated[0] = 1;
         break;
       }
-
       // Solve KKT equations on eligible ones
-      while(iter[l]<max_iter) {
-        iter[l]++;
-        mismatch = 0; max_update = 0.0;
-        for(j=0; j<p; j++) {
-          if(ind[j]) {
-            // Calculate v1, v2
-	    jn = j*n; v1 = 0.0; v2 = 0.0; pct = 0.0;
-            for(i=0; i<n; i++) {
-              v1 += x[jn+i]*dk[i];
-              v2 += x2[jn+i]*ddk[i];
-              pct += ddk[i];
-            }
-	    v1 = v1/(2*n); v2 = v2/(2*n); pct = pct*gamma/n;
-	    if(pct<0.05 || pct<1/n) {
-	      // Rprintf("j=%d, pct=%lf\n",j,pct);
-	      // approximate v2 with a continuation technique
-              v2 = 0.0;
-	      for(i=0; i<n; i++) {
-                if (ddk[i]) {
-                  v2 += x2[jn+i]*ddk[i];
-                } else { // |r_i| > gamma
-		  w[i] = (dk[i]-c)/r[i];
-                  v2 += x2[jn+i]*w[i];
-                }
+      while (iter[l] < max_iter) {
+        iter[l]++; max_update = 0.0;
+        for (j=0; j<p; j++) {
+          if (include[j]) {
+            for (k=0; k<5; k++) {
+              update = 0.0; mismatch = 0;
+              // Calculate v1, v2
+	      jn = j*n; v1 = 0.0; v2 = 0.0; pct = 0.0;
+              for (i=0; i<n; i++) {
+                v1 += x[jn+i]*d1[i];
+                v2 += x2[jn+i]*d2[i];
+                pct += d2[i];
               }
-              v2 = v2/(2*n);
-              //Rprintf("After: v2=%f\n", v2);
-	    }
-            // Update beta_j
-            if(pf[j]==0.0) { // unpenalized
-	      beta[lp+j] = beta_old[j] + v1/v2;
-            } else if(fabs(beta_old[j]+s[j])>1.0) { // active
-              s[j] = sign(beta_old[j]+s[j]);
-              beta[lp+j] = beta_old[j] + (v1-l1*pf[j]*s[j]-l2*pf[j]*beta_old[j])/(v2+l2*pf[j]);
-            } else {
-              s[j] = (v1+v2*beta_old[j])/(l1*pf[j]);
-              beta[lp+j] = 0.0;
-            }
-            // mark the first mismatch between beta and s
-	    if (!mismatch && j>0) {
-              if (fabs(s[j]) > 1 || (beta[lp+j] != 0 && s[j] != sign(beta[lp+j])))
-		 mismatch = 1;
-            }
-	    // Update r, dk, ddk and compute candidate of max_update
-            shift = beta[lp+j]-beta_old[j];
-            if(shift!=0) {
-	      v2 = 0.0;
-              for(i=0; i<n; i++) {
-		r[i] -= x[jn+i]*shift;
-                if(fabs(r[i])>gamma) {
-                  dk[i] = sign(r[i])+c;
-                  ddk[i] = 0.0;
-                } else {
-		  dk[i] = r[i]/gamma+c;
-		  ddk[i] = 1.0/gamma;
-	          //v2 += x2[jn+i]*ddk[i];
-	        }
+	      pct *= gamma/n; // percentage of residuals with absolute values below gamma
+	      if (pct < 0.07 || pct < 1.0/n) {
+	        // approximate v2 with a continuation technique
+	        for (i=0; i<n; i++) {
+	      	  tmp = fabs(r[i]);
+		  if (tmp > gamma) v2 += x2[jn+i]/tmp;
+                }
 	      }
-	      //v2 += 2*n*l2*pf[j];
-	      //update = v2*shift*shift;
-              //Rprintf("loss decrease = %f, penalty decrease = %f\n", v2*shift*shift, 2*n*l1*pf[j]*fabs(fabs(beta[lp+j])-fabs(beta_old[j])));
-              update = n*(v2*shift*shift + 2*fabs(v1*shift));
-              if(update>max_update) max_update = update;
-              beta_old[j] = beta[lp+j];
+	      v1 /= 2.0*n; v2 /= 2.0*n;
+              // Update beta_j
+              if (pf[j] == 0.0) { // unpenalized
+	        beta[lp+j] = beta_old[j] + v1/v2;
+              } else if (fabs(beta_old[j]+s[j]) > 1.0) { // active
+                s[j] = sign(beta_old[j]+s[j]);
+                beta[lp+j] = beta_old[j] + (v1-l1*pf[j]*s[j]-l2*pf[j]*beta_old[j])/(v2+l2*pf[j]);
+              } else { // inactive
+                s[j] = (v1+v2*beta_old[j])/(l1*pf[j]);
+                beta[lp+j] = 0.0;
+              }
+              // mismatch between beta and s
+	      if (pf[j] > 0) {
+                if (fabs(s[j]) > 1 || (beta[lp+j] != 0 && s[j] != sign(beta[lp+j]))) mismatch = 1;
+              }
+	      // Update r, d1, d2 and compute candidate of max_update
+              change = beta[lp+j]-beta_old[j];
+              if (fabs(change) > 1e-6) {
+                for (i=0; i<n; i++) {
+		  r[i] -= x[jn+i]*change;
+                  if (fabs(r[i]) > gamma) {
+                    d1[i] = sign(r[i])+c;
+                    d2[i] = 0.0;
+                  } else {
+		    d1[i] = r[i]*gi+c;
+		    d2[i] = gi;
+	          }
+	        }
+                update = (v2+l2*pf[j])*change*change*n*4.0;
+                if (update > max_update) max_update = update;
+                beta_old[j] = beta[lp+j];
+              }
+              if (!mismatch && update < thresh) break;
             }
           }
         }
         // Check for convergence
-        if(iter[l]>10) {
-          if(!mismatch && max_update < thresh) {
-            converged = 1;
-	    break;
-	  }
-        }
+        if (max_update < thresh) break;
       }
       // Scan for violations of the screening rule and count nonzero variables
       violations = 0; nnzero = 0;
       if (scrflag != 0) {
         for (j=0; j<p; j++) {
-	  if (ind[j]==0) {
-            v1 = crossprod(x, dk, n, j)/(2*n);
+	  if (include[j] == 0 && nonconst[j]) {
+	    // pf[j] > 0, beta_old = beta = s = 0
+            v1 = crossprod(x, d1, n, j)/(2*n);
 	    // Check for KKT conditions
-	    if (fabs(v1)>l1*pf[j]) { 
-	      ind[j]=1; 
+	    if (fabs(v1) > l1*pf[j]) { 
+	      include[j]=1; 
 	      violations++;
-	      // pf[j] > 0
-	      // beta_old = beta = d = 0, no need for judgement
               s[j] = v1/(l1*pf[j]);
               if (message) Rprintf("+V%d", j);
-	    } else if (scrflag == 1 && ldiff != 0.0) {
-	      v3 = fabs((v1-z[j])/(pf[j]*ldiff*alpha));
-              if (v3 > strfactor) strfactor = v3;
+	    } else if (scrflag == 1) {
+	      v3 = fabs((v1-z[j]));
+              if (v3 > scrfactor) scrfactor = v3;
 	    }
 	    z[j] = v1;
 	  }
-          if (beta_old[j] != 0.0) nnzero++;
+	  if (beta_old[j] != 0) nnzero++;
         }
-        if (violations>0 && message) Rprintf("\n");
+        scrfactor /= alpha*ldiff;
+        if (message && violations > 0) Rprintf("\n");
       } else {
         for (j=0; j<p; j++) {
-          if (beta_old[j] != 0.0) nnzero++;
+          if (beta_old[j] != 0) nnzero++;
         }
       }
-      if (violations==0) break;
+      if (message) Rprintf("# iterations = %d\n", iter[l]);
+      if (violations == 0) break;
       nv += violations;
     }
-    //if (message) Rprintf("# iterations = %d\n", iter[l]);
   }
   if (scrflag != 0 && message) Rprintf("# KKT violations detected and fixed: %d\n", nv);
   numv[0] = nv;
   // Postprocessing
-  if (ppflag == 1) {
-    unstandardize(beta, center, scale, nlam, p);
-  } else if (ppflag == 2) {
-    unrescale(beta, colMin, colRange, nlam, p);
-  }
+  if (ppflag) postprocess(beta, shift, scale, nonconst, nlam, p);
 
   Free(x2);
-  Free(center);
+  Free(shift);
   Free(scale);
-  Free(colMin);
-  Free(colRange);
   Free(beta_old);
   Free(r);
-  Free(w);
   Free(s);
-  Free(dk);
-  Free(ddk);
+  Free(d);
+  Free(d1);
+  Free(d2);
   Free(z);
-  Free(ind);
+  Free(include);
+  Free(nonconst);
 }
 
-static void sncd_squared(double *beta, int *iter, double *lambda, int *saturated, int *numv, double *x, double *y, double *d, double *pf, double *alpha_, double *eps_, double *lambda_min_, 
-	int *nlam_, int *n_, int *p_, int *ppflag_, int *scrflag_, int *dfmax_, int *max_iter_, int *user_, int *message_)
+static void sncd_squared(double *beta, int *iter, double *lambda, int *saturated, int *numv, double *x, double *y, 
+			 double *pf, double *alpha_, double *eps_, double *lambda_min_, int *nlam_, int *n_, int *p_, 
+			 int *ppflag_, int *scrflag_, int *dfmax_, int *max_iter_, int *user_, int *message_)
 {
   // Declarations
   double alpha = alpha_[0]; double eps = eps_[0]; double lambda_min = lambda_min_[0]; 
   int nlam = nlam_[0]; int n = n_[0]; int p = p_[0]; int ppflag = ppflag_[0]; int scrflag = scrflag_[0];
   int dfmax = dfmax_[0]; int max_iter = max_iter_[0]; int user = user_[0]; int message = message_[0];
-  int i, j, k, l, lp, jn, converged, mismatch; double lstep, ldiff, lmax, l1, l2, v1, v2, v3, temp, shift, nullDev, max_update, update, thresh, strfactor = 1.0;
+  int i, j, k, l, ll, lp, jn, lstart, mismatch; 
+  double lstep, ldiff = 1.0, l1, l2, v1, v2, v3, tmp, change, nullDev, max_update, update, thresh;
+  double scrfactor = 1.0; // variable screening factor
+  //scrflag = 0: no screening; scrflag = 1: Adaptive Strong Rule(ASR); scrflag = 2: Strong Rule(SR)
+  // ASR fits an appropriate scrfactor adaptively; SR always uses scrfactor = 1
   int nnzero = 0; // number of nonzero variables
   double *x2 = Calloc(n*p, double); // x^2
-  for(i=0; i<n; i++) x2[i] = 1.0; // column of 1's for intercept
-  double *x2bar = Calloc(p, double); // Col Mean of x2
-  x2bar[0] = 1.0;
-  double *center = Calloc(p, double);
+  for (i=0; i<n; i++) x2[i] = 1.0; // column of 1's for intercept
+  double *x2m = Calloc(p, double); // Column means of x2
+  x2m[0] = 1.0;
+  double *shift = Calloc(p, double);
   double *scale = Calloc(p, double);
-  double *colMin = Calloc(p, double);
-  double *colRange = Calloc(p, double);
   double *beta_old = Calloc(p, double); 
   double *r = Calloc(n, double);
   double *s = Calloc(p, double);
   double *z = Calloc(p, double); // X^t * r/n
   double cutoff;
-  int *ind = Calloc(p, int);
-  ind[0] = 1; // intercept is unpenalized so always included
-  //scrflag = 0: no screening; scrflag = 1: Adaptive Strong Rule(ASR); scrflag = 2: Strong Rule(SR)
-  // ASR fits an appropriate strfactor adaptively; SR always uses strfactor = 1
-  if (scrflag == 0) {
-    for (j=1; j<p; j++) ind[j] = 1;
-  }
+  int *include = Calloc(p, int);
+  int *nonconst = Calloc(p, int);
   int violations = 0, nv = 0;
 
   // Preprocessing
   if (ppflag == 1) {
-    standardize(x, x2, center, scale, n, p);
+    standardize(x, x2, shift, scale, nonconst, n, p);
   } else if (ppflag == 2) {
-    rescale(x, x2, colMin, colRange, n, p);
+    rescale(x, x2, shift, scale, nonconst, n, p);
   } else {
-    for(j=1; j<p; j++) {
-      jn = j*n;
-      for(i=0; i<n; i++) x2[jn+i]=pow(x[jn+i],2);
-    }
+    simple_process(x, x2, nonconst, n, p);
   }
   
-  // Initialize r, z and assign x2bar, nullDev
+  include[0] = 1; // always include an intercept
+  if (scrflag == 0) {
+    for (j=1; j<p; j++) if (nonconst[j]) include[j] = 1;
+  } else {
+    for (j=1; j<p; j++) if (pf[j] == 0.0 && nonconst[j]) include[j] = 1; // unpenalized coefficients
+  }
+  
+  // Initialize r, z and assign x2m, nullDev
   nullDev = 0.0;
-  for(i=0; i<n; i++) {
+  for (i=0; i<n; i++) {
     r[i] = y[i];
     nullDev += pow(r[i],2); // without dividing by 2n
   }
   thresh = eps*nullDev;
-  for(j=0; j<p; j++) {
-    z[j] = crossprod(x, r, n, j)/n;
+  if (message) Rprintf("Threshold = %f\n", thresh);
+
+  for (j=0; j<p; j++) {
     jn = j*n;
-    for(i=0; i<n; i++) x2bar[j] += x2[jn+i];
-    x2bar[j] = x2bar[j]/n;
+    tmp = 0.0;
+    for (i=0; i<n; i++) tmp += x2[jn+i];
+    x2m[j] = tmp/n;
+  }
+    
+  // Initial solution
+  init_squared(beta, beta_old, iter, x, x2m, y, r, pf, nonconst, thresh, n, p, ppflag, max_iter);
+  
+  // Set up lambda
+  if (user == 0) {
+    lambda[0] = maxprod(x, r, n, p, pf, nonconst)/(n*alpha);
+    if (lambda_min == 0.0) lambda_min = 0.001;
+    lstep = log(lambda_min)/(nlam - 1);
+    for (l=1; l<nlam; l++) lambda[l] = lambda[l-1]*exp(lstep);
+    if (message) Rprintf("Lambda 1\n# iterations = %d\n", iter[0]);
+    lstart = 1;
+  } else {
+    lstart = 0;
   }
   
-  // Setup lambda
-  if(user==0) {
-    lambda[0] = maxprod(x, d, n, p, pf)/(n*alpha);
-    if(lambda_min == 0.0) lambda_min = 0.001;
-    lstep = log(lambda_min)/(nlam - 1);
-    for(l=1; l<nlam; l++) lambda[l] = lambda[l-1]*exp(lstep);
-  }
-
+  for (j=1; j<p; j++) if (pf[j] && nonconst[j]) z[j] = crossprod(x, r, n, j)/n;
+  
   // Solution path
-  for(l=0; l<nlam; l++) {
-    converged = 0; lp = l*p;
+  for (l=lstart; l<nlam; l++) {
+    if (message) Rprintf("Lambda %d\n", l+1);
+    lp = l*p;
     l1 = lambda[l]*alpha;
     l2 = lambda[l]*(1.0-alpha);
 
     // Variable screening
-    if(scrflag != 0) {
-      if(strfactor>5.0) strfactor = 5.0;
-      if(l!=0) {
-        cutoff = alpha*((1.0+strfactor)*lambda[l] - strfactor*lambda[l-1]);
-        ldiff = lambda[l-1] - lambda[l];
+    if (scrflag != 0) {
+      if (scrfactor > 1.0) scrfactor = 1.0;
+      if (l == 0) {
+      	cutoff = alpha*lambda[0];
       } else {
-        lmax = 0.0;
-        for(j=0; j<p; j++) if(fabs(z[j])>lmax) lmax = fabs(z[j]);
-        lmax = lmax/alpha;
-        cutoff = alpha*((1+strfactor)*lambda[0] - strfactor*lmax);
-        ldiff = lmax - lambda[0];
+      	cutoff = alpha*((1.0+scrfactor)*lambda[l] - scrfactor*lambda[l-1]);
+        ldiff = lambda[l-1] - lambda[l];
       }
       for (j=1; j<p; j++) {
-        if(fabs(z[j]) > (cutoff * pf[j])) {
-          ind[j] = 1;
-        } else {
-          ind[j] = 0;
-        }
+        if (include[j] == 0 && nonconst[j] && fabs(z[j]) > cutoff * pf[j]) include[j] = 1;
       }
-      strfactor = 1.0; //reset strfactor for ASR
+      if (scrflag == 1) scrfactor = 0.0; //reset scrfactor for ASR
     }
-    while(iter[l] < max_iter) {
-      converged = 0;
+    while (iter[l] < max_iter) {
       // Check dfmax
-      if(nnzero > dfmax) {
-        for(int ll = l; ll<nlam; ll++) iter[ll] = NA_INTEGER;
+      if (nnzero > dfmax) {
+        for (ll = l; ll<nlam; ll++) iter[ll] = NA_INTEGER;
         saturated[0] = 1;
         break;
       }
       // Solve KKT equations on eligible ones
-      while(iter[l]<max_iter) {
-        iter[l]++;
-	mismatch=0; max_update = 0.0;
-        for(j=0; j<p; j++) {
-          if(j == 0 && ppflag == 1) continue; // intercept is constant for standardized data
-          if(ind[j]) {
-            // Update v1=z[j], v2=x2bar[j]
-      	    v1 = crossprod(x, r, n, j)/n; v2 = x2bar[j];
-            // Update beta_j
-            if(pf[j]==0.0) { // unpenalized
-	      beta[lp+j] = beta_old[j] + v1/v2;
-	    } else if(fabs(beta_old[j]+s[j])>1.0) { // active
-              s[j] = sign(beta_old[j]+s[j]);
-              beta[lp+j] = beta_old[j] + (v1-l2*pf[j]*beta_old[j]-l1*pf[j]*s[j])/(v2+l2*pf[j]);
-            } else {
-              s[j] = (v1+v2*beta_old[j])/(l1*pf[j]);
-              beta[lp+j] = 0.0;
-            }
-            // mark the first mismatch between beta and s
-	    if (!mismatch && j>0) {
-              if (fabs(s[j]) > 1 || (beta[lp+j] != 0 && s[j] != sign(beta[lp+j])))
-		 mismatch = 1;
-            }
-	    // Update residuals
-            shift = beta[lp+j]-beta_old[j];       
-            if(shift!=0.0) {
-	      jn = j*n;              
-              for(i=0; i<n; i++) r[i] -= x[jn+i]*shift;
-	      update = n*(1.0+l2*pf[j])*shift*shift;
-	      if(update>max_update) max_update = update;
-	      beta_old[j] = beta[lp+j];
+      while (iter[l] < max_iter) {
+        iter[l]++; max_update = 0.0;
+        for (j=0; j<p; j++) {
+          if (j == 0 && ppflag == 1) continue; // intercept is constant for standardized data
+          if (include[j]) {
+            for (k=0; k<5; k++) {
+              update = 0.0; mismatch = 0;
+	      // Update v1=z[j], v2=x2m[j]
+              v1 = crossprod(x, r, n, j)/n; v2 = x2m[j];
+              // Update beta_j
+              if (pf[j] == 0.0) { // unpenalized
+                beta[lp+j] = beta_old[j] + v1/v2;
+              } else if (fabs(beta_old[j]+s[j]) > 1.0) { // active
+                s[j] = sign(beta_old[j]+s[j]);
+                beta[lp+j] = beta_old[j] + (v1-l2*pf[j]*beta_old[j]-l1*pf[j]*s[j])/(v2+l2*pf[j]);
+              } else { // inactive
+                s[j] = (v1+v2*beta_old[j])/(l1*pf[j]);
+                beta[lp+j] = 0.0;
+              }
+              // mismatch between beta and s
+              if (pf[j] > 0) {
+                if (fabs(s[j]) > 1 || (beta[lp+j] != 0 && s[j] != sign(beta[lp+j]))) mismatch = 1;
+              }
+              // Update residuals
+              change = beta[lp+j]-beta_old[j];       
+              if (fabs(change) > 1e-6) {
+                jn = j*n;
+                for (i=0; i<n; i++) r[i] -= x[jn+i]*change;
+                update = (v2+l2*pf[j])*change*change*n;
+                if (update > max_update) max_update = update;
+                beta_old[j] = beta[lp+j];
+              }
+              if (!mismatch && update < thresh) break;
             }
           }
         }             
         // Check for convergence
-        if(iter[l]>1) {
-          if(!mismatch && max_update < thresh) {
-            converged = 1;
-	    break;
-	  }
-        }
+        if (max_update < thresh) break;
       }
       // Scan for violations of the screening rule and count nonzero variables
       violations = 0; nnzero = 0;
       if (scrflag != 0) {
         for (j=0; j<p; j++) {
-	  if (ind[j]==0) {
+	  if (include[j] == 0 && nonconst[j]) {
+	    // pf[j] > 0, beta_old = beta = s = 0
             v1 = crossprod(x, r, n, j)/n;
 	    // Check for KKT conditions
-	    if (fabs(v1)>l1*pf[j]) {
-	      ind[j]=1; 
+	    if (fabs(v1) > l1*pf[j]) {
+	      include[j]=1; 
 	      violations++;
-	      // pf[j] > 0
-	      // beta_old = beta = d = 0, no need for judgement
               s[j] = v1/(l1*pf[j]);
-              if (violations == 1 & message) Rprintf("Lambda %d\n", l+1);
               if (message) Rprintf("+V%d", j);
-	    } else if (scrflag == 1 && ldiff != 0.0) {
-	      v3 = fabs((v1-z[j])/(pf[j]*ldiff*alpha));
-              if (v3 > strfactor) strfactor = v3;
+	    } else if (scrflag == 1) {
+	      v3 = fabs((v1-z[j]));
+              if (v3 > scrfactor) scrfactor = v3;
 	    }
 	    z[j] = v1;
 	  }
-          if (beta_old[j] != 0.0) nnzero++;
+	  if (beta_old[j] != 0) nnzero++;
         }
-        if (violations>0 && message) Rprintf("\n");
+        scrfactor /= alpha*ldiff;
+        if (message && violations > 0) Rprintf("\n");
       } else {
         for (j=0; j<p; j++) {
-          if (beta_old[j] != 0.0) nnzero++;
+          if (beta_old[j] != 0) nnzero++;
         }
       }
-      if (violations==0) break;
+      if (message) Rprintf("# iterations = %d\n", iter[l]);
+      if (violations == 0) break;
       nv += violations;
     }
   }
-  if (scrflag!=0 && message) Rprintf("# KKT violations detected and fixed: %d\n", nv);
+  if (scrflag != 0 && message) Rprintf("# KKT violations detected and fixed: %d\n", nv);
   numv[0] = nv;
   // Postprocessing
-  if (ppflag == 1) {
-    unstandardize(beta, center, scale, nlam, p);
-  } else if (ppflag == 2) {
-    unrescale(beta, colMin, colRange, nlam, p);
-  }
-
+  if (ppflag) postprocess(beta, shift, scale, nonconst, nlam, p);
+  
   Free(x2);
-  Free(x2bar);
-  Free(center);
+  Free(x2m);
+  Free(shift);
   Free(scale);
-  Free(colMin);
-  Free(colRange);
   Free(beta_old);
   Free(r);
   Free(s);
-  Free(ind);
+  Free(include);
+  Free(nonconst);
 }
 
 // alpha = 0, pure l2 penalty
-static void sncd_huber_l2(double *beta, int *iter, double *lambda, double *x, double *y, double *d, double *pf, double *gamma_, double *eps_, double *lambda_min_, 
-	int *nlam_, int *n_, int *p_, int *ppflag_, int *max_iter_, int *user_, int *message_)
+static void sncd_huber_l2(double *beta, int *iter, double *lambda, double *x, double *y, double *pf, double *gamma_, double *eps_, 
+			  double *lambda_min_, int *nlam_, int *n_, int *p_, int *ppflag_, int *max_iter_, int *user_, int *message_)
 {
   // Declarations
   double gamma = gamma_[0]; double eps = eps_[0]; double lambda_min = lambda_min_[0]; 
   int nlam = nlam_[0]; int n = n_[0]; int p = p_[0]; int ppflag = ppflag_[0];
   int max_iter = max_iter_[0]; int user = user_[0]; int message = message_[0];
-  int i, j, k, l, lp, jn, converged; double pct, lstep, ldiff, lmax, v1, v2, v3, temp, shift, nullDev, max_update, update, thresh;
+  int i, j, k, l, lp, jn; 
+  double gi = 1.0/gamma, pct, lstep, v1, v2, tmp, change, nullDev, max_update, update, thresh;
   double *x2 = Calloc(n*p, double); // x^2
-  for(i=0; i<n; i++) x2[i] = 1.0; // column of 1's for intercept
-  double *center = Calloc(p, double);
+  for (i=0; i<n; i++) x2[i] = 1.0; // column of 1's for intercept
+  double *shift = Calloc(p, double);
   double *scale = Calloc(p, double);
-  double *colMin = Calloc(p, double);
-  double *colRange = Calloc(p, double);
   double *beta_old = Calloc(p, double); 
   double *r = Calloc(n, double);
-  double *w = Calloc(n, double);  
-  double *dk = Calloc(n, double);
-  double *ddk = Calloc(n, double);
+  double *d1 = Calloc(n, double);
+  double *d2 = Calloc(n, double);
+  int *nonconst = Calloc(p, int);
   
   // Preprocessing
   if (ppflag == 1) {
-    standardize(x, x2, center, scale, n, p);
+    standardize(x, x2, shift, scale, nonconst, n, p);
   } else if (ppflag == 2) {
-    rescale(x, x2, colMin, colRange, n, p);
+    rescale(x, x2, shift, scale, nonconst, n, p);
   } else {
-    for(j=1; j<p; j++) {
-      jn = j*n;
-      for(i=0; i<n; i++) x2[jn+i]=pow(x[jn+i],2);
-    }
+    simple_process(x, x2, nonconst, n, p);
   }
 
   // Initialization
   nullDev = 0.0; // not divided by n
   for (i=0;i<n;i++) {
     r[i] = y[i];
-    temp = fabs(r[i]);
-    if(temp>gamma) {
-      nullDev += temp - gamma/2;
+    tmp = fabs(r[i]);
+    if (tmp > gamma) {
+      nullDev += tmp - gamma/2;
     } else {
-      nullDev += temp*temp/(2*gamma);
+      nullDev += tmp*tmp/(2*gamma);
     }
   }
   thresh = eps*nullDev;
-  //if (message) Rprintf("threshold = %f\n", thresh);
-  derivative_huber(dk, ddk, r, gamma, n); 
-
-  // Setup lambda
-  if(user==0) {
-    lambda[0] = maxprod(x, d, n, p, pf)/(n*0.01);
-    if(lambda_min == 0.0) lambda_min = 0.001;
+  derivative_huber(d1, d2, r, gamma, n); 
+  if (message) Rprintf("Threshold = %f\nGamma = %f\n", thresh, gamma);
+  
+  // Set up lambda
+  if (user == 0) {
+    lambda[0] = maxprod(x, d1, n, p, pf, nonconst)/n*10;
+    if (lambda_min == 0.0) lambda_min = 0.001;
     lstep = log(lambda_min)/(nlam - 1);
-    for(l=1; l<nlam; l++) lambda[l] = lambda[l-1]*exp(lstep);
+    for (l=1; l<nlam; l++) lambda[l] = lambda[l-1]*exp(lstep);
   }
 
   // Solution path
-  for(l=0; l<nlam; l++) {
-    converged = 0; lp = l*p;
-    while(iter[l] < max_iter) {
+  for (l=0; l<nlam; l++) {
+    lp = l*p;
+    while (iter[l] < max_iter) {
       iter[l]++;
       max_update = 0.0; 
-      for(j=0; j<p; j++) {
-        // Calculate v1, v2
-	jn = j*n; v1 = 0.0; v2 = 0.0; pct = 0.0;
-        for(i=0; i<n; i++) {
-          v1 += x[jn+i]*dk[i];
-          v2 += x2[jn+i]*ddk[i];
-          pct += ddk[i];
-        }
-	v1 = v1/n; v2 = v2/n; pct = pct*gamma/n;
-	if(pct<0.05 || pct<1/n) {
-          //Rprintf("j=%d, pct=%lf\n",j,pct);
-	  // approximate v2 with a continuation technique
-          v2 = 0.0; 
-	  for(i=0; i<n; i++) {
-	    if (ddk[i]) {
-	      v2 += x2[jn+i]*ddk[i];
-	    } else { // |r_i|>gamma
-              w[i] = dk[i]/r[i];
-              v2 += x2[jn+i]*w[i];
+      for (j=0; j<p; j++) {
+      	if (nonconst[j]) {
+      	  for (k=0; k<5; k++) {
+       	    update = 0.0;
+      	    // Calculate v1, v2
+            jn = j*n; v1 = 0.0; v2 = 0.0; pct = 0.0;
+            for (i=0; i<n; i++) {
+              v1 += x[jn+i]*d1[i];
+              v2 += x2[jn+i]*d2[i];
+              pct += d2[i];
             }
-          }
-          v2 = v2/n;
-          // Rprintf("After: v2=%f\n", v2);              
-	}
-        // Update beta_j
-        if(pf[j]==0.0) { // unpenalized
-	  beta[lp+j] = beta_old[j] + v1/v2; 
-        } else {
-          beta[lp+j] = beta_old[j] + (v1-lambda[l]*pf[j]*beta_old[j])/(v2+lambda[l]*pf[j]); 
-        }
-	// Update r, dk, ddk and compute candidate of max_update
-        shift = beta[lp+j]-beta_old[j];
-        if(shift!=0.0) {
-	  v2 = 0.0;
-          for(i=0; i<n; i++) {
-	    r[i] -= x[jn+i]*shift;
-            if(fabs(r[i])>gamma) {
-              dk[i] = sign(r[i]);
-              ddk[i] = 0.0;
+            pct *= gamma/n; // percentage of residuals with absolute values below gamma
+            if (pct < 0.05 || pct < 1.0/n) {
+              // approximate v2 with a continuation technique
+              for (i=0; i<n; i++) {
+                tmp = fabs(r[i]);
+                if (tmp > gamma) v2 += x2[jn+i]/tmp;
+              }
+            }
+            v1 /= n; v2 /= n;
+            // Update beta_j
+            if (pf[j] == 0.0) { // unpenalized
+              beta[lp+j] = beta_old[j] + v1/v2; 
             } else {
-	      dk[i] = r[i]/gamma;
-              ddk[i] = 1.0/gamma;
-	      v2 += x2[jn+i]*ddk[i];
-	    }
-	  }
-	  v2 += n*lambda[l]*pf[j];
-	  update = v2*shift*shift;
-          if(update>max_update) max_update = update;
-          beta_old[j] = beta[lp+j];
+              beta[lp+j] = beta_old[j] + (v1-lambda[l]*pf[j]*beta_old[j])/(v2+lambda[l]*pf[j]); 
+            }
+            // Update r, d1, d2 and compute candidate of max_update
+            change = beta[lp+j]-beta_old[j];
+            if (fabs(change) > 1e-6) {
+              for (i=0; i<n; i++) {
+                r[i] -= x[jn+i]*change;
+                if (fabs(r[i]) > gamma) {
+                  d1[i] = sign(r[i]);
+                  d2[i] = 0.0;
+                } else {
+                  d1[i] = r[i]*gi;
+                  d2[i] = gi;
+                }
+              }
+              update = (v2+lambda[l]*pf[j])*change*change*n;
+              if (update > max_update) max_update = update;
+              beta_old[j] = beta[lp+j];
+            }
+            if (update < thresh) break;
+          }
         }
       }
       // Check for convergence
-      if(iter[l]>1) {
-        if(max_update < thresh) {
-          converged = 1;
-	  break;
-	}
-      }
+      if (max_update < thresh) break;
     }
+    if (message) Rprintf("Lambda %d: # iterations = %d\n", l+1, iter[l]);
   }
   // Postprocessing
-  if (ppflag == 1) {
-    unstandardize(beta, center, scale, nlam, p);
-  } else if (ppflag == 2) {
-    unrescale(beta, colMin, colRange, nlam, p);
-  }
+  if (ppflag) postprocess(beta, shift, scale, nonconst, nlam, p);
 
   Free(x2);
-  Free(center);
+  Free(shift);
   Free(scale);
-  Free(colMin);
-  Free(colRange);
   Free(beta_old);
   Free(r);
-  Free(w);
-  Free(dk);
-  Free(ddk);
+  Free(d1);
+  Free(d2);
+  Free(nonconst);
 }
 
-static void sncd_quantile_l2(double *beta, int *iter, double *lambda, double *x, double *y, double *d, double *pf, double *gamma_, double *tau_, double *eps_, 
-       double *lambda_min_, int *nlam_, int *n_, int *p_, int *ppflag_, int *max_iter_, int *user_, int *message_)
+static void sncd_quantile_l2(double *beta, int *iter, double *lambda, double *x, double *y, double *pf, 
+			     double *tau_, double *eps_, double *lambda_min_, int *nlam_, int *n_, int *p_, 
+			     int *ppflag_, int *max_iter_, int *user_, int *message_)
 {
   // Declarations
-  double gamma = gamma_[0]; double tau = tau_[0]; double c = 2*tau-1.0; double eps = eps_[0]; double lambda_min = lambda_min_[0]; 
+  double tau = tau_[0]; double eps = eps_[0]; double lambda_min = lambda_min_[0]; 
   int nlam = nlam_[0]; int n = n_[0]; int p = p_[0]; int ppflag = ppflag_[0];
   int max_iter = max_iter_[0]; int user = user_[0]; int message = message_[0];
-  int i, j, k, l, lp, jn, converged; double pct, lstep, ldiff, lmax, v1, v2, v3, temp, shift, nullDev, max_update, update, thresh;
+  int i, j, k, l, lp, jn; 
+  double gamma, gi, pct, lstep, v1, v2, tmp, change, nullDev, max_update, update, thresh;
+  double c = 2*tau-1.0; // coefficient for the linear term in quantile loss
   double *x2 = Calloc(n*p, double); // x^2
-  for(i=0; i<n; i++) x2[i] = 1.0; // column of 1's for intercept
-  double *center = Calloc(p, double);
+  for (i=0; i<n; i++) x2[i] = 1.0; // column of 1's for intercept
+  double *shift = Calloc(p, double);
   double *scale = Calloc(p, double);
-  double *colMin = Calloc(p, double);
-  double *colRange = Calloc(p, double);
   double *beta_old = Calloc(p, double); 
   double *r = Calloc(n, double);
-  double *w = Calloc(n, double);  
-  double *dk = Calloc(n, double);
-  double *ddk = Calloc(n, double);
-  int m = (int) (n*0.10);
+  double *d = Calloc(n, double);
+  double *d1 = Calloc(n, double);
+  double *d2 = Calloc(n, double);
+  int *nonconst = Calloc(p, int);
+  int m = n/10 + 1;
 
   // Preprocessing
   if (ppflag == 1) {
-    standardize(x, x2, center, scale, n, p);
+    standardize(x, x2, shift, scale, nonconst, n, p);
   } else if (ppflag == 2) {
-    rescale(x, x2, colMin, colRange, n, p);
+    rescale(x, x2, shift, scale, nonconst, n, p);
   } else {
-    for(j=1; j<p; j++) {
-      jn = j*n;
-      for(i=0; i<n; i++) x2[jn+i]=pow(x[jn+i],2);
-    }
+    simple_process(x, x2, nonconst, n, p);
   }
 
   // Initialization
   nullDev = 0.0; // not divided by n
   for (i=0;i<n;i++) {
     r[i] = y[i];
-    temp = r[i];
-    nullDev += fabs(temp) + c*temp;
+    nullDev += fabs(r[i]) + c*r[i];
   }
   thresh = eps*nullDev;
-  derivative_quantapprox(dk, ddk, r, gamma, c, n);
-
-  // Setup lambda
-  if(user==0) {
-    lambda[0] = maxprod(x, d, n, p, pf);
-    // compute lambda[0] for original quantile loss
-    for(i=0; i<n; i++) {
-      if(fabs(r[i]) < 1e-10) {
-        d[i] = 1.0+c;
+  gamma = ksav(r, n, m);
+  if (gamma<0.001) gamma = 0.001;
+  derivative_quantapprox(d1, d2, r, gamma, c, n);
+  if (message) Rprintf("Threshold = %f\n", thresh);
+  
+  // Set up lambda
+  if (user == 0) {
+    lambda[0] = maxprod(x, d1, n, p, pf, nonconst);
+    for (i=0; i<n; i++) {
+      if (fabs(r[i]) < 1e-10) {
+        d[i] = c;
       } else {
         d[i] = sign(r[i])+c;
       } 
     }
-    temp = maxprod(x, d, n, p, pf);
-    if(temp>lambda[0]) lambda[0] = temp; // pick the larger one
-    lambda[0] = lambda[0]/(2*n*0.01);
-    if(lambda_min == 0.0) lambda_min = 0.001;
+    tmp = maxprod(x, d, n, p, pf, nonconst);
+    if (tmp > lambda[0]) lambda[0] = tmp;
+    lambda[0] = lambda[0]/(2*n)*10;
+    if (lambda_min == 0.0) lambda_min = 0.001;
     lstep = log(lambda_min)/(nlam - 1);
-    for(l=1; l<nlam; l++) lambda[l] = lambda[l-1]*exp(lstep);
+    for (l=1; l<nlam; l++) lambda[l] = lambda[l-1]*exp(lstep);
   }
 
   // Solution path
-  for(l=0; l<nlam; l++) {
-    if(gamma>0.001 && l>0) {
-      temp = ksav(r, n, m);
-      if (temp < gamma) gamma = temp;
+  for (l=0; l<nlam; l++) {
+    if (gamma > 0.001 && l > 0) {
+      tmp = ksav(r, n, m);
+      if (tmp < gamma) gamma = tmp;
     }
-    if(gamma<0.001) gamma = 0.001;
-    if (message) Rprintf("Lambda %d: Gamma = %f\n", l+1, gamma);
-    converged = 0; lp = l*p;
-    while(iter[l] < max_iter) {
+    if (gamma < 0.001) gamma = 0.001;
+    gi = 1.0/gamma;
+    lp = l*p;
+    while (iter[l] < max_iter) {
       iter[l]++;
       max_update = 0.0; 
-      for(j=0; j<p; j++) {
-        // Calculate v1, v2
-	jn = j*n; v1 = 0.0; v2 = 0.0; pct = 0.0;
-        for(i=0; i<n; i++) {
-          v1 += x[jn+i]*dk[i];
-          v2 += x2[jn+i]*ddk[i];
-          pct += ddk[i];
-        }
-	v1 = v1/(2*n); v2 = v2/(2*n); pct = pct*gamma/n;
-	if(pct<0.05 || pct<1/n) {
-	  // Rprintf("j=%d, pct=%lf\n",j,pct);
-	  // approximate v2 with a continuation technique
-          v2 = 0.0;
-	  for(i=0; i<n; i++) {
-            if (ddk[i]) {
-              v2 += x2[jn+i]*ddk[i];
-            } else { // |r_i| > gamma
-	      w[i] = (dk[i]-c)/r[i];
-              v2 += x2[jn+i]*w[i];
+      for (j=0; j<p; j++) {
+      	if (nonconst[j]) {
+          for (k=0; k<5; k++) {
+            update = 0.0;
+            // Calculate v1, v2
+            jn = j*n; v1 = 0.0; v2 = 0.0; pct = 0.0;
+            for (i=0; i<n; i++) {
+              v1 += x[jn+i]*d1[i];
+              v2 += x2[jn+i]*d2[i];
+              pct += d2[i];
             }
-          }
-          v2 = v2/(2*n);
-          //Rprintf("After: v2=%f\n", v2);
-	}
-        // Update beta_j
-        if(pf[j]==0.0) { // unpenalized
-	  beta[lp+j] = beta_old[j] + v1/v2; 
-        } else {
-          beta[lp+j] = beta_old[j] + (v1-lambda[l]*pf[j]*beta_old[j])/(v2+lambda[l]*pf[j]); 
-        }
-	// Update r, dk, ddk and compute candidate of max_update
-        shift = beta[lp+j]-beta_old[j];
-        if(shift!=0) {
-	  v2 = 0.0;
-          for(i=0; i<n; i++) {
-	    r[i] -= x[jn+i]*shift;
-            if(fabs(r[i])>gamma) {
-              dk[i] = sign(r[i])+c;
-              ddk[i] = 0.0;
+            pct *= gamma/n; // percentage of residuals with absolute values below gamma
+            if (pct < 0.07 || pct < 1.0/n) {
+              // approximate v2 with a continuation technique
+              for (i=0; i<n; i++) {
+                tmp = fabs(r[i]);
+	        if (tmp > gamma) v2 += x2[jn+i]/tmp;
+              }
+            }
+            v1 /= 2.0*n; v2 /= 2.0*n;
+            // Update beta_j
+            if (pf[j] == 0.0) { // unpenalized
+              beta[lp+j] = beta_old[j] + v1/v2; 
             } else {
-	      dk[i] = r[i]/gamma+c;
-              ddk[i] = 1.0/gamma;
-	    }
-	  }
-          update = n*(v2*shift*shift + 2*fabs(v1*shift));
-          if(update>max_update) max_update = update;
-          beta_old[j] = beta[lp+j];
-        }
+              beta[lp+j] = beta_old[j] + (v1-lambda[l]*pf[j]*beta_old[j])/(v2+lambda[l]*pf[j]); 
+            }
+            // Update r, d1, d2 and compute candidate of max_update
+            change = beta[lp+j]-beta_old[j];
+            if (fabs(change) > 1e-6) {
+              for (i=0; i<n; i++) {
+                r[i] -= x[jn+i]*change;
+                if (fabs(r[i]) > gamma) {
+                  d1[i] = sign(r[i])+c;
+                  d2[i] = 0.0;
+                } else {
+                  d1[i] = r[i]*gi+c;
+                  d2[i] = gi;
+                }
+              }
+              update = (v2+lambda[l]*pf[j])*change*change*n*4;
+              if (update > max_update) max_update = update;
+              beta_old[j] = beta[lp+j];
+            }
+            if (update < thresh) break;
+          }
+      	}
       }
       // Check for convergence
-      if(iter[l]>10) {
-        if(max_update < thresh) {
-          converged = 1;
-	  break;
-	}
-      }
+      if (max_update < thresh) break;
     }
+    if (message) Rprintf("Lambda %d: Gamma = %f, # iterations = %d\n", l+1, gamma, iter[l]);
   }
   // Postprocessing
-  if (ppflag == 1) {
-    unstandardize(beta, center, scale, nlam, p);
-  } else if (ppflag == 2) {
-    unrescale(beta, colMin, colRange, nlam, p);
-  }
-
+  if (ppflag) postprocess(beta, shift, scale, nonconst, nlam, p);
+  
   Free(x2);
-  Free(center);
+  Free(shift);
   Free(scale);
-  Free(colMin);
-  Free(colRange);
   Free(beta_old);
   Free(r);
-  Free(w);
-  Free(dk);
-  Free(ddk);
+  Free(d);
+  Free(d1);
+  Free(d2);
+  Free(nonconst);
 }
 
-static void sncd_squared_l2(double *beta, int *iter, double *lambda, double *x, double *y, double *d, double *pf, double *eps_, double *lambda_min_, 
-	int *nlam_, int *n_, int *p_, int *ppflag_, int *max_iter_, int *user_, int *message_)
+static void sncd_squared_l2(double *beta, int *iter, double *lambda, double *x, double *y, double *pf, 
+			    double *eps_, double *lambda_min_, int *nlam_, int *n_, int *p_, int *ppflag_, 
+                            int *max_iter_, int *user_, int *message_)
 {
   // Declarations
   double eps = eps_[0]; double lambda_min = lambda_min_[0]; 
   int nlam = nlam_[0]; int n = n_[0]; int p = p_[0]; int ppflag = ppflag_[0];
   int max_iter = max_iter_[0]; int user = user_[0]; int message = message_[0];
-  int i, j, k, l, lp, jn, converged; double pct, lstep, ldiff, lmax, v1, v2, v3, temp, shift, nullDev, max_update, update, thresh;
+  int i, j, k, l, lp, jn; 
+  double lstep, v1, v2, tmp, change, nullDev, max_update, update, thresh;
   double *x2 = Calloc(n*p, double); // x^2
-  for(i=0; i<n; i++) x2[i] = 1.0; // column of 1's for intercept
-  double *x2bar = Calloc(p, double); // Col Mean of x2
-  x2bar[0] = 1.0; 
-  double *center = Calloc(p, double);
+  for (i=0; i<n; i++) x2[i] = 1.0; // column of 1's for intercept
+  double *x2m = Calloc(p, double); // Column means of x2
+  x2m[0] = 1.0; 
+  double *shift = Calloc(p, double);
   double *scale = Calloc(p, double);
-  double *colMin = Calloc(p, double);
-  double *colRange = Calloc(p, double);
   double *beta_old = Calloc(p, double); 
   double *r = Calloc(n, double);
+  int *nonconst = Calloc(p, int);
   
   // Preprocessing
   if (ppflag == 1) {
-    standardize(x, x2, center, scale, n, p);
+    standardize(x, x2, shift, scale, nonconst, n, p);
   } else if (ppflag == 2) {
-    rescale(x, x2, colMin, colRange, n, p);
+    rescale(x, x2, shift, scale, nonconst, n, p);
   } else {
-    for(j=1; j<p; j++) {
-      jn = j*n;
-      for(i=0; i<n; i++) x2[jn+i]=pow(x[jn+i],2);
-    }
+    simple_process(x, x2, nonconst, n, p);
   }
-
+  
   // Initialization
   nullDev = 0.0;
-  for(i=0; i<n; i++) {
+  for (i=0; i<n; i++) {
     r[i] = y[i];
     nullDev += pow(r[i],2); // without dividing by 2n
   }
   thresh = eps*nullDev;
-  for(j=0; j<p; j++) {
-    jn = j*n;
-    for(i=0; i<n; i++) x2bar[j] += x2[jn+i];
-    x2bar[j] = x2bar[j]/n;
+  if (message) Rprintf("Threshold = %f\n", thresh);
+  for (j=0; j<p; j++) {
+    jn = j*n; tmp = 0.0;
+    for (i=0; i<n; i++) tmp += x2[jn+i];
+    x2m[j] = tmp/n;
   }
 
-  // Setup lambda
-  if(user==0) {
-    lambda[0] = maxprod(x, d, n, p, pf)/(n*0.01);
-    if(lambda_min == 0.0) lambda_min = 0.001;
+  // Set up lambda
+  if (user == 0) {
+    lambda[0] = maxprod(x, r, n, p, pf, nonconst)/n*10;
+    if (lambda_min == 0.0) lambda_min = 0.001;
     lstep = log(lambda_min)/(nlam - 1);
-    for(l=1; l<nlam; l++) lambda[l] = lambda[l-1]*exp(lstep);
+    for (l=1; l<nlam; l++) lambda[l] = lambda[l-1]*exp(lstep);
   }
 
   // Solution path
-  for(l=0; l<nlam; l++) {
-    converged = 0; lp = l*p;
-    while(iter[l] < max_iter) {
+  for (l=0; l<nlam; l++) {
+    lp = l*p;
+    while (iter[l] < max_iter) {
       iter[l]++;
       max_update = 0.0; 
-      for(j=0; j<p; j++) {
-        if(j == 0 && ppflag == 1) continue; // intercept is constant for standardized data
-        // Update v1, v2=x2bar[j]
-      	v1 = crossprod(x, r, n, j)/n; v2 = x2bar[j];
-        // Update beta_j
-        if(pf[j]==0.0) { // unpenalized
-	  beta[lp+j] = beta_old[j] + v1/v2;
-	} else {
-          beta[lp+j] = beta_old[j] + (v1-lambda[l]*pf[j]*beta_old[j])/(v2+lambda[l]*pf[j]);
-        }
-	// Update r
-        shift = beta[lp+j]-beta_old[j];       
-        if(shift!=0.0) {
-	  jn = j*n;              
-          for(i=0; i<n; i++) r[i] -= x[jn+i]*shift;
-	  update = n*(1.0+lambda[l]*pf[j])*shift*shift;
-	  if(update>max_update) max_update = update;
-	  beta_old[j] = beta[lp+j];
+      for (j=0; j<p; j++) {
+        if (j == 0 && ppflag == 1) continue; // intercept is constant for standardized data
+        if (nonconst[j]) {
+      	  for (k=0; k<5; k++) {
+            update = 0.0;
+            // Update v1, v2=x2m[j]
+            v1 = crossprod(x, r, n, j)/n; v2 = x2m[j];
+            // Update beta_j
+            if (pf[j] == 0.0) { // unpenalized
+              beta[lp+j] = beta_old[j] + v1/v2;
+            } else {
+              beta[lp+j] = beta_old[j] + (v1-lambda[l]*pf[j]*beta_old[j])/(v2+lambda[l]*pf[j]);
+            }
+            // Update r
+            change = beta[lp+j]-beta_old[j];       
+            if (fabs(change) > 1e-6) {
+              jn = j*n;              
+              for (i=0; i<n; i++) r[i] -= x[jn+i]*change;
+              update = (v2+lambda[l]*pf[j])*change*change*n;
+              if (update > max_update) max_update = update;
+              beta_old[j] = beta[lp+j];
+            }
+            if (update < thresh) break;
+          }
         }
       }
       // Check for convergence
-      if(iter[l]>1) {
-        if(max_update < thresh) {
-          converged = 1;
-	  break;
-	}
-      }
+      if (max_update < thresh) break;
     }
+    if (message) Rprintf("Lambda %d: # iterations = %d\n", l+1, iter[l]);
   }
   // Postprocessing
-  if (ppflag == 1) {
-    unstandardize(beta, center, scale, nlam, p);
-  } else if (ppflag == 2) {
-    unrescale(beta, colMin, colRange, nlam, p);
-  }
+  if (ppflag) postprocess(beta, shift, scale, nonconst, nlam, p);
 
   Free(x2);
-  Free(x2bar);
-  Free(center);
+  Free(x2m);
+  Free(shift);
   Free(scale);
-  Free(colMin);
-  Free(colRange);
   Free(beta_old);
   Free(r);
+  Free(nonconst);
 }
 
 
 static const R_CMethodDef cMethods[] = {
-  {"huber", (DL_FUNC) &sncd_huber, 22},
-  {"quant", (DL_FUNC) &sncd_quantile, 23},
-  {"squared", (DL_FUNC) &sncd_squared, 21},
-  {"huber_l2", (DL_FUNC) &sncd_huber_l2, 17},
-  {"quantile_l2", (DL_FUNC) &sncd_quantile_l2, 18},
-  {"squared_l2", (DL_FUNC) &sncd_squared_l2, 16},
+  {"huber", (DL_FUNC) &sncd_huber, 21},
+  {"quant", (DL_FUNC) &sncd_quantile, 21},
+  {"squared", (DL_FUNC) &sncd_squared, 20},
+  {"huber_l2", (DL_FUNC) &sncd_huber_l2, 16},
+  {"quantile_l2", (DL_FUNC) &sncd_quantile_l2, 16},
+  {"squared_l2", (DL_FUNC) &sncd_squared_l2, 15},
   {NULL}
 };
 
@@ -1230,4 +1074,3 @@ void R_init_hqreg(DllInfo *info)
 {
   R_registerRoutines(info,cMethods,NULL,NULL,NULL);
 }
-

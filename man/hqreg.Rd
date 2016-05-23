@@ -5,8 +5,7 @@
 by lasso or elastic-net over a grid of values for the regularization parameter lambda.}
 \usage{
 hqreg(X, y, method = c("huber", "quantile", "ls"),
-    gamma, tau = 0.5, alpha = 1, nlambda = 100, 
-    lambda.min = ifelse(nrow(X)>ncol(X), 0.001, 0.05), lambda, 
+    gamma = IQR(y)/10, tau = 0.5, alpha = 1, nlambda = 100, lambda.min = 0.05, lambda, 
     preprocess = c("standardize", "rescale", "none"), screen = c("ASR", "SR", "none"), 
     max.iter = 10000, eps = 1e-7, dfmax = ncol(X)+1, penalty.factor = rep(1, ncol(X)), 
     message = FALSE)
@@ -19,8 +18,7 @@ hqreg(X, y, method = c("huber", "quantile", "ls"),
     "quantile", or "ls" for least squares (see \code{Details}).}
   \item{gamma}{The tuning parameter of Huber loss, with no effect for the other loss 
     functions. Huber loss is quadratic for absolute values less than gamma and linear for those 
-    greater. If missing, the function uses a default value (5th percentile of the absolute
-    values of the centered response vector).}
+    greater than gamma. The default value is IQR(y)/10.}
   \item{tau}{The tuning parameter of the quantile loss, with no effect for the other loss 
     functions. It represents the conditional quantile of the response to be estimated, so 
     must be a number between 0 and 1. It includes the absolute loss when tau = 0.5 (default).}
@@ -29,9 +27,7 @@ hqreg(X, y, method = c("huber", "quantile", "ls"),
     is the lasso penalty and \code{alpha=0} the ridge penalty.}
   \item{nlambda}{The number of lambda values.  Default is 100.}
   \item{lambda.min}{The smallest value for lambda, as a fraction of lambda.max, the data 
-    derived entry value. 
-    Default is 0.001 if the number of observations is larger than the number of variables 
-    and 0.05 otherwise.}
+    derived entry value. Default is 0.05.}
   \item{lambda}{A user-specified sequence of lambda values. Typical usage is to leave 
     blank and have the program automatically compute a \code{lambda} sequence based on 
     \code{nlambda} and \code{lambda.min}. Specifying \code{lambda} overrides this. This 
@@ -115,11 +111,11 @@ predict(fit1, X[1:5,], lambda = c(0.02, 0.01))
 
 # Quantile loss
 fit2 = hqreg(X, y, method = "quantile", tau = 0.2)
-plot(fit2, xvar = "norm")
+plot(fit2)
 
 # Squared loss
 fit3 = hqreg(X, y, method = "ls", preprocess = "rescale")
-plot(fit3, xvar = "lambda", log.x = TRUE)
+plot(fit3, xvar = "norm")
 }
 \keyword{models}
 \keyword{regression}
