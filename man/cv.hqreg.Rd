@@ -4,13 +4,15 @@
 \description{Perform k-fold cross validation for elastic-net penalized Huber loss regression 
   and quantile regression over a sequence of lambda values and find an optimal lambda.}
 \usage{
-cv.hqreg(X, y, ..., ncores = 1, nfolds = 10, fold.id, 
+cv.hqreg(X, y, ..., FUN = c("hqreg", "hqreg_raw"), ncores = 1, nfolds = 10, fold.id, 
          type.measure = c("deviance", "mse", "mae"), seed)
 }
 \arguments{
-  \item{X}{The input matrix, as in \code{hqreg}.}
-  \item{y}{The response vector, as in \code{hqreg}.}
-  \item{...}{Additional arguments to \code{hqreg}.}
+  \item{X}{The input matrix.}
+  \item{y}{The response vector.}
+  \item{...}{Additional arguments to \code{FUN}.}
+  \item{FUN}{Model fitting function. The default is "hqreg" which preprocesses the data internally. 
+  The other option is "hqreg_raw" which uses the raw data as is.}
   \item{ncores}{\code{cv.hqreg} can be run in parallel across a
   cluster using the \code{parallel} package. If \code{ncores > 1},a cluster is 
   created to run \code{cv.hqreg} in parallel. The code is run sequentially if 
@@ -47,6 +49,12 @@ they should call \code{cv.hqreg} for each combination of these parameters and us
     error of the minimum.}
   \item{lambda.min}{The value of \code{lambda} with the minimum cross-validation error.}
 }
+\references{Yi, C. and Huang, J. (2016) 
+  \emph{Semismooth Newton Coordinate Descent Algorithm for 
+  Elastic-Net Penalized Huber Loss Regression and Quantile Regression},
+  \url{https://arxiv.org/abs/1509.02957} \cr
+  \emph{Journal of Computational and Graphical Statistics, accepted in Nov 2016} \cr
+  \url{http://www.tandfonline.com/doi/full/10.1080/10618600.2016.1256816}}
 \author{Congrui Yi <congrui-yi@uiowa.edu>}
 \seealso{\code{hqreg}, \code{plot.cv.hqreg}}
 \examples{
@@ -56,12 +64,14 @@ eps = 4*rnorm(1000)
 y = drop(X[,1:10] \%*\% beta + eps)
 cv = cv.hqreg(X, y, seed = 123)
 plot(cv)
-predict(cv, X[1:5,])
+
+cv_raw = cv.hqreg(X, y, FUN = "hqreg_raw", seed = 321)
+predict(cv_raw, X[1:5,])
 
 # parallel cross validation
 \dontrun{
-cv = cv.hqreg(X, y, ncores = 5)
-plot(cv)
+cv_parallel = cv.hqreg(X, y, ncores = 5)
+plot(cv_parallel)
 }
 }
 \keyword{models}

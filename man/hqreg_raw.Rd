@@ -1,12 +1,12 @@
-\name{hqreg}
-\alias{hqreg}
-\title{Fit a robust regression model with Huber or quantile loss penalized by lasso or elasti-net}
-\description{Fit solution paths for Huber loss regression or quantile regression penalized 
-by lasso or elastic-net over a grid of values for the regularization parameter lambda.}
+\name{hqreg_raw}
+\alias{hqreg_raw}
+\title{Fit a robust regression model on raw data with Huber or quantile loss penalized by lasso or elasti-net}
+\description{On raw data without internal data preprocessing, fit solution paths for Huber loss regression or 
+quantile regression penalized by lasso or elastic-net over a grid of values for the regularization parameter lambda.}
 \usage{
-hqreg(X, y, method = c("huber", "quantile", "ls"),
+hqreg_raw(X, y, method = c("huber", "quantile", "ls"),
     gamma = IQR(y)/10, tau = 0.5, alpha = 1, nlambda = 100, lambda.min = 0.05, lambda, 
-    preprocess = c("standardize", "rescale"), screen = c("ASR", "SR", "none"), 
+    intercept = TRUE, screen = c("ASR", "SR", "none"), 
     max.iter = 10000, eps = 1e-7, dfmax = ncol(X)+1, penalty.factor = rep(1, ncol(X)), 
     message = FALSE)
 }
@@ -35,9 +35,7 @@ hqreg(X, y, method = c("huber", "quantile", "ls"),
     a single value. To get coefficients for a single \code{lambda}, use \code{coef} or 
     \code{predict} instead after fitting the solution path with \code{hqreg} or performing 
     k-fold CV with \code{cv.hqreg}.}
-  \item{preprocess}{Preprocessing technique to be applied to the input. Either 
-    "standardize" (default) or "rescale"(see \code{Details}). The coefficients 
-    are always returned on the original scale.}
+  \item{intercept}{Should an intercept be included? Default is TRUE.}
   \item{screen}{Screening rule to be applied at each \code{lambda} that discards variables 
     for speed. Either "ASR" (default), "SR" or "none". "SR" stands for the strong rule, 
     and "ASR" for the adaptive strong rule. Using "ASR" typically requires fewer iterations 
@@ -67,15 +65,6 @@ hqreg(X, y, method = c("huber", "quantile", "ls"),
   for \code{method = "quantile"}, \deqn{loss(t) = t (\tau - I(t<0));}
   for \code{method = "ls"}, \deqn{loss(t) = \frac{t^2}{2}}{loss(t) = t^2/2.}
   In the model, "t" is replaced by residuals.
-
-  The program supports different types of preprocessing techniques. They are applied to 
-  each column of the input matrix \code{X}. Let x be a column of \code{X}. For 
-  \code{preprocess = "standardize"}, the formula is 
-  \deqn{x' = \frac{x-mean(x)}{sd(x)};}{x' = (x-mean(x))/sd(x);}
-  for \code{preprocess = "rescale"}, 
-  \deqn{x' = \frac{x-min(x)}{max(x)-min(x)}.}{x' = (x-min(x))/(max(x)-min(x)).}
-  The models are fit with preprocessed input, then the coefficients are transformed back
-  to the original scale via some algebra. To fit a model for raw data with no preprocessing, use \code{hqreg_raw}.
 }
 
 \value{
@@ -108,20 +97,17 @@ hqreg(X, y, method = c("huber", "quantile", "ls"),
 X = matrix(rnorm(1000*100), 1000, 100)
 beta = rnorm(10)
 eps = 4*rnorm(1000)
-y = drop(X[,1:10] \%*\% beta + eps)
+y = drop(X[,1:10] \%*\% beta) + eps
 
 # Huber loss
-fit1 = hqreg(X, y)
+# include an intercept by default
+fit1 = hqreg_raw(X, y)
 coef(fit1, 0.01)
 predict(fit1, X[1:5,], lambda = c(0.02, 0.01))
 
-# Quantile loss
-fit2 = hqreg(X, y, method = "quantile", tau = 0.2)
+# no intercept
+fit2 = hqreg_raw(X, y, intercept = FALSE)
 plot(fit2)
-
-# Squared loss
-fit3 = hqreg(X, y, method = "ls", preprocess = "rescale")
-plot(fit3, xvar = "norm")
 }
 \keyword{models}
 \keyword{regression}

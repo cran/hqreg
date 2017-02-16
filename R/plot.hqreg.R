@@ -1,8 +1,13 @@
 plot.hqreg <- function(x, xvar = c("lambda", "norm"), log.l = TRUE, nvars = TRUE, alpha = 1, ...)
 {
   xvar <- match.arg(xvar)
-  nonzero <- which(rowSums(abs(x$beta))!=0)
-  Y <- x$beta[nonzero[-1],]
+  if (nrow(x$beta) == length(x$penalty.factor)) { # no intercept
+    Y <- x$beta[,,drop = FALSE]
+  } else {
+    Y <- x$beta[-1,,drop = FALSE]
+  }
+  nonzero <- which(rowSums(abs(Y))!=0)
+  Y <- Y[nonzero,,drop = FALSE]
   p <- nrow(Y)
   if (xvar == "lambda") {
     X <- x$lambda
@@ -34,8 +39,8 @@ plot.hqreg <- function(x, xvar = c("lambda", "norm"), log.l = TRUE, nvars = TRUE
   do.call("matlines",line.args)
   abline(h=0)
   if (nvars) {
-    n.s <- apply(coef(x, lambda=x$lambda)!=0, 2, sum)-1
-    axis(3, at=X, labels=n.s, tick=FALSE, line=-0.5)
+    nv = predict(x, lambda = x$lambda, type = "nvars")
+    axis(3, at=X, labels=nv, tick=FALSE, line=-0.5)
   }
 }
 
